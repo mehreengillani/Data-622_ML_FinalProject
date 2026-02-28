@@ -1,0 +1,413 @@
+---
+title: "Incident event log Analysis and ML Project Ideas"
+author: "Mehreen Gillani"
+format: 
+    pdf:
+        fig-width: 7
+        fig-height: 4
+        fig-asp: 0.7
+        code-block-font-size: \tiny
+        code-overflow: wrap
+        code-block-bg: true
+        code-block-border-left: true
+        keep-tex: true
+
+---
+
+#### Introduction:
+This notebook explores the "Incident Management Process Enriched Event Log" dataset, which contains detailed records of IT incidents. The goal is to analyze the data, identify patterns, and propose potential machine learning projects that could provide actionable insights for IT operations teams.
+
+**Dataset:** https://archive.ics.uci.edu/dataset/498/incident+management+process+enriched+event+log
+
+
+#### import libraries and load dataset
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt 
+import seaborn as sns
+#load the dataset
+#https://archive.ics.uci.edu/dataset/498/incident+management+process+enriched+event+log
+df = pd.read_csv('incident_event_log.csv')
+# Basic info
+print("Dataset Shape:", df.shape)
+print("\nColumn Info:")
+df.info()
+
+print("\nFirst few rows:")
+print(df.head())
+
+print("\nBasic Statistics:")
+print(df.describe(include='all'))
+
+print("\nMissing Values:")
+print(df.isnull().sum().sort_values(ascending=False))
+
+print("\nData Types:")
+print(df.dtypes)
+```
+
+### Data Preprocessing and Feature Engineering
+
+```{python}
+# Convert datetime columns
+datetime_cols = ['opened_at', 'resolved_at', 'closed_at', 
+'sys_created_at', 'sys_updated_at']
+for col in datetime_cols:
+    if col in df.columns:
+        df[col] = pd.to_datetime(df[col], errors='coerce')
+
+# Calculate incident duration
+if all(col in df.columns for col in ['opened_at', 'closed_at']):
+    df['resolution_time'] = (df['closed_at'] - df['opened_at']).dt.total_seconds()/3600 
+    
+    # Basic statistics on resolution time
+    print("\nResolution Time Statistics (hours):")
+    print(df['resolution_time'].describe())
+```
+
+```{python}
+# Potential target variables:
+# 1. Binary classification: Will incident be resolved within SLA?
+# 2. Multi-class: Priority level prediction
+# 3. Regression: Time to resolution
+# 4. Multi-class: Incident category/assignment group
+
+# Check SLA compliance
+if 'made_sla' in df.columns:
+    print("\nSLA Compliance:")
+    print(df['made_sla'].value_counts(normalize=True)) 
+    #made_sla indicates whether each incident was resolved within the agreed time limit
+
+# Check priority distribution
+if 'priority' in df.columns:
+    print("\nPriority Distribution:")
+    print(df['priority'].value_counts().sort_index())
+```
+
+**Q1: What's the incident volume over time?**
+```{python}
+if 'opened_at' in df.columns:
+    df['date'] = df['opened_at'].dt.date
+    daily_incidents = df.groupby('date').size()
+    
+    plt.figure(figsize=(12, 6))
+    daily_incidents.plot()
+    plt.title('Daily Incident Volume')
+    plt.ylabel('Number of Incidents')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+```
+**Q2: What are the most common incident categories?**
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+
+if 'category' in df.columns:
+    top_categories = df['category'].value_counts().head(10)
+    top_categories.plot(kind='bar', ax=axes[0])
+    axes[0].set_title('Top 10 Incident Categories')
+    axes[0].set_xlabel('Category')
+    axes[0].set_ylabel('Count')
+
+if 'subcategory' in df.columns:
+    top_subcategories = df['subcategory'].value_counts().head(10)
+    top_subcategories.plot(kind='bar', ax=axes[1])
+    axes[1].set_title('Top 10 Incident Subcategories')
+    axes[1].set_xlabel('Subcategory')
+    axes[1].set_ylabel('Count')
+
+plt.tight_layout()
+plt.show()
+```
+ 
+ **Q3 How does priority distribution look?**
+ ```{python}
+ if 'priority' in df.columns and 'impact' in df.columns and 'urgency' in df.columns:
+    # Priority distribution
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    
+    df['priority'].value_counts().sort_index().plot(kind='bar', ax=axes[0])
+    axes[0].set_title('Priority Distribution')
+    axes[0].set_xlabel('Priority')
+    
+    df['impact'].value_counts().sort_index().plot(kind='bar', ax=axes[1])
+    axes[1].set_title('Impact Distribution')
+    axes[1].set_xlabel('Impact')
+    
+    df['urgency'].value_counts().sort_index().plot(kind='bar', ax=axes[2])
+    axes[2].set_title('Urgency Distribution')
+    axes[2].set_xlabel('Urgency')
+    
+    plt.tight_layout()
+    plt.show()
+```    
+**Q4: Are there any correlations between features?**
+```{python}
+# Distribution of incident types
+plt.figure(figsize=(10,6))
+sns.countplot(x='incident_state', data=df)
+plt.title('Distribution of Incident States')
+plt.xlabel('Incident State')
+plt.ylabel('Count')
+plt.xticks(rotation=45)
+plt.show()
+# Correlation between numerical features
+numerical_features = df.select_dtypes(include=[np.number])
+correlation_matrix = numerical_features.corr()
+plt.figure(figsize=(12,8))
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', linewidths=0.5)
+plt.title('Correlation Matrix of Numerical Features')
+plt.show()
+```
+
+
+
+**data has significant class imbalance - this is actually a realistic scenario in IT operations! Most incidents are routine (Priority 3), with few critical ones. This presents both challenges and opportunities.**
+
+```{python}
+# Create binary target for critical incidents
+df['is_critical'] = (df['priority'] == '1 - Critical').astype(int)
+
+print("Critical Incidents Distribution:")
+print(df['is_critical'].value_counts(normalize=True))
+# Non-critical: 98.4%, Critical: 1.6% - Perfect for anomaly detection!
+```
+#### Exploratory Data Analysis
+
+```{python}
+# 1. Analyze critical incidents pattern
+critical_incidents = df[df['priority'] == '1 - Critical']
+
+print("Critical Incidents Analysis:")
+print(f"Total Critical: {len(critical_incidents)}")
+print(f"SLA Compliance in Critical: {critical_incidents['made_sla']
+.value_counts(normalize=True)}")
+
+# 2. Time-based patterns
+if 'opened_at' in df.columns:
+    df['hour'] = pd.to_datetime(df['opened_at']).dt.hour
+    df['dayofweek'] = pd.to_datetime(df['opened_at']).dt.dayofweek
+    
+    critical_by_hour = df[df['priority'] == '1 - Critical'].groupby('hour').size()
+    all_by_hour = df.groupby('hour').size()
+    
+    # Plot critical incident rate by hour
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+    
+    critical_rate = (critical_by_hour / all_by_hour * 100)
+    critical_rate.plot(kind='bar', ax=axes[0])
+    axes[0].set_title('Critical Incident Rate by Hour (%)')
+    axes[0].set_xlabel('Hour')
+    
+    # Day of week pattern
+    critical_by_dow = df[df['priority'] == '1 - Critical'].groupby('dayofweek').size()
+    all_by_dow = df.groupby('dayofweek').size()
+    critical_rate_dow = (critical_by_dow / all_by_dow * 100)
+    critical_rate_dow.plot(kind='bar', ax=axes[1])
+    axes[1].set_title('Critical Incident Rate by Day of Week (%)')
+    axes[1].set_xlabel('Day (0=Monday)')
+    
+    plt.tight_layout()
+    plt.show()
+```   
+
+**Interesting insights:**
+- Critical incidents are more likely to violate SLA (only 50% compliance vs 80% for all incidents)
+- Higher critical incident rates during off-hours (1 AM - 12AM- 5 AM)
+- Slightly higher critical incident rates on weekends especially Sunday
+
+#### Feature Engineering 
+```{python}
+# Create meaningful features
+# 1. Time-based features
+df['opened_at'] = pd.to_datetime(df['opened_at'])
+df['resolved_at'] = pd.to_datetime(df['resolved_at'])
+
+df['opening_hour'] = df['opened_at'].dt.hour
+df['opening_day'] = df['opened_at'].dt.dayofweek
+df['opening_month'] = df['opened_at'].dt.month
+df['is_business_hours'] = ((df['opening_hour'] >= 9) & (df['opening_hour'] <= 17)).astype(int)
+df['is_weekend'] = (df['opening_day'] >= 5).astype(int)
+
+# 2. Historical features
+# Reassignment count as complexity indicator
+df['high_reassignment'] = (df['reassignment_count'] > df['reassignment_count'].median()).astype(int)
+
+# 3. Text features (if u_symptom has text)
+if 'u_symptom' in df.columns:
+    df['symptom_length'] = df['u_symptom'].str.len()
+    df['has_error'] = df['u_symptom'].str.contains('error|fail|exception', 
+    case=False, na=False).astype(int)
+```
+
+Outliers Detection:
+```{python}
+# For numerical columns
+numerical_cols = ['reassignment_count', 'reopen_count', 'sys_mod_count', 
+                  'resolution_time', 'symptom_length']  # add your engineered features
+
+# Visual inspection
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+for idx, col in enumerate(numerical_cols[:6]):  # limit to first 6
+    if col in df.columns:
+        sns.boxplot(data=df, y=col, ax=axes[idx//3, idx%3])
+        axes[idx//3, idx%3].set_title(f'Boxplot of {col}')
+plt.tight_layout()
+plt.show()
+
+# Statistical method (IQR)
+def detect_outliers_iqr(data, column):
+    Q1 = data[column].quantile(0.25)
+    Q3 = data[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = data[(data[column] < lower_bound) | (data[column] > upper_bound)]
+    return len(outliers), len(outliers)/len(data)*100
+
+for col in numerical_cols:
+    if col in df.columns:
+        count, pct = detect_outliers_iqr(df, col)
+        print(f"{col}: {count} outliers ({pct:.2f}%)")
+```        
+
+```{python}
+# These are incidents bounced between many teams - potential problem indicators!
+print("Reassignment outliers analysis:")
+outlier_reassignments = df[df['reassignment_count'] > df['reassignment_count'].quantile(0.75) + 1.5 * (df['reassignment_count'].quantile(0.75) - df['reassignment_count'].quantile(0.25))]
+
+# Check if these become critical incidents
+if 'is_critical' in df.columns:
+    critical_rate_outliers = outlier_reassignments['is_critical'].mean()
+    critical_rate_normal = df[df['reassignment_count'] <= 
+    df['reassignment_count'].quantile(0.75) + 1.5 * 
+    (df['reassignment_count'].quantile(0.75) - df['reassignment_count'].quantile(0.25))]['is_critical'].mean()
+    
+    print(f"Critical incident rate - High reassignments: {critical_rate_outliers:.3f}")
+    print(f"Critical incident rate - Normal reassignments: {critical_rate_normal:.3f}")
+
+```
+
+Both high and normal reassignments have the same critical incident rate (1.6%). This means:
+
+Reassignments are standard practice - Not necessarily a sign of trouble
+Critical incidents get resolved quickly - They might bypass multiple reassignments
+
+```{python}
+# 1. Time-based patterns
+if 'opening_hour' in df.columns:
+    hourly_critical = df.groupby('opening_hour')['is_critical'].mean()
+    print("\nCritical incidents by hour:")
+    print(hourly_critical.sort_values(ascending=False).head())
+
+# 2. Category importance
+if 'category' in df.columns:
+    category_critical = df.groupby('category')['is_critical'].mean().sort_values(ascending=False)
+    print("\nTop 5 categories by critical rate:")
+    print(category_critical.head())
+
+# 3. Interaction features
+df['urgent_high_impact'] = ((df['urgency'] == 'High') & (df['impact'] == 'High')).astype(int)
+critical_rate = df.groupby('urgent_high_impact')['is_critical'].mean()
+print("\nUrgent + High Impact critical rate:")
+print(critical_rate)
+
+# 4. Previous incident patterns (if you have user/caller history)
+if 'caller_id' in df.columns:
+    # Critical rate for callers with history
+    caller_critical_rate = df.groupby('caller_id')['is_critical'].mean()
+    df['caller_historical_critical_rate'] = df['caller_id'].map(caller_critical_rate)
+```    
+
+**Key insights from feature importance analysis:**
+
+1.  Critical incidents aren't random - They happen at 1 AM
+2.  Category 29 is a crisis hotspot
+3. Urgent + High Impact" doesn't predict criticality
+
+**Future work:**
+Predicting Critical IT Incidents Before They Happen"
+
+**What We Can Build:**
+A predictive model that identifies which incoming incidents will escalate to critical priority, enabling:
+
+1.  Proactive staffing during high-risk hours (1 AM)
+2.  Targeted monitoring for high-risk categories (Category 29)
+3. Automated alerts when risk factors combine
+
+#### Strengths:
+
+**Rich features:** 37 columns with diverse data types
+**Temporal data:** Has timestamps for tracking lifecycle
+**Clear business context:** IT incident management
+
+### Multiple ML problem types possible:
+
+1.  Classification (priority prediction, assignment group prediction)
+2. Regression (time-to-resolution prediction)
+3. Clustering (incident patterns)
+4. Time series forecasting (incident volume)
+5. NLP (if 'u_symptom' contains text)
+
+### Potential ML Project Ideas:
+
+#### Priority Prediction (Classification)
+
+Predict incident priority based on description, category, impact
+
+Features: category, subcategory, u_symptom, contact_type, location
+
+Resolution Time Prediction (Regression)
+
+Predict how long an incident will take to resolve
+
+Features: priority, category, assignment_group, reassignment_count
+
+Automated Assignment (Classification)
+
+Predict which assignment group should handle the incident
+
+Features: category, subcategory, u_symptom, location, priority
+
+SLA Violation Prediction (Binary Classification)
+
+Will this incident violate SLA?
+
+Features: priority, category, historical data, reassignment patterns
+
+Incident Root Cause Analysis (Clustering/NLP)
+
+Cluster similar incidents based on symptoms
+Identify patterns in 'u_symptom' text
+
+**Pros**
+
+Real Business Value: Prevents outages, saves money, improves customer experience
+
+Clear Problem: Binary classification with imbalanced but meaningful target
+
+Strong Signals Found: Time and category patterns are powerful predictors
+
+Multiple Approaches: Can try classification, anomaly detection, or time series
+
+Interpretable Results: Easy to explain to stakeholders why incidents become critical
+
+Actionable Insights: Model outputs can directly change operations
+
+**Cons**
+
+Class Imbalance: Only 1.6% critical incidents requires careful handling
+
+Missing Key Features: No data on deployments, code changes, or monitoring alerts
+
+Temporal Challenges: Need chronological split to avoid data leakage
+
+Feature Engineering Required: Raw data needs transformation for optimal results
+
+Interpretability vs Complexity: Black-box models might be harder to trust
+
+-------------------------------------------------
