@@ -1,0 +1,468 @@
+---
+title: "Machine Learning Approach to Theme Detection in Social Media Posts"
+author: "Mehreen Gillani"
+format: 
+    pdf:
+        fig-width: 7
+        fig-height: 4
+        fig-asp: 0.7
+        code-overflow: wrap
+        code-block-bg: true
+        code-block-border-left: true
+        keep-tex: true
+---
+
+#### Introduction
+This project implements a text classification model to automatically identify discussion themes in social media posts using the Exorde dataset. Using TF-IDF features and Random Forest classification, we analyze patterns in Thursday midnight posts across 15+ themes including Politics, Entertainment, and Technology, achieving insights into theme distinguishability and classification challenges. The project also explores class imbalance, feature importance, and confusion patterns to inform future improvements in theme detection models.
+
+##### Import necessary libraries 
+
+```{python setup, include=FALSE}
+#| include: false
+
+# Set global chunk options
+import pandas as pd
+pd.set_option('display.width', 100)
+pd.set_option('display.max_colwidth', 50)
+
+# Quarto global settings
+from IPython.display import HTML
+HTML("""
+<style>
+pre {
+    white-space: pre-wrap !important;
+    word-wrap: break-word !important;
+    font-size: 10pt;
+}
+code {
+    white-space: pre-wrap !important;
+    word-wrap: break-word !important;
+}
+</style>
+""")
+import pandas as pd
+from collections import Counter
+import matplotlib.pyplot as plt
+from datetime import datetime
+import numpy as np
+import seaborn as sns
+```
+
+##### Load the dataset. Becuase the dataset is large, we will load it in streaming mode using Hugging Face Datasets library. This allows us to process the data in chunks without downloading the entire dataset at once.
+```{python}
+from datasets import load_dataset
+
+# Load in streaming mode - no full download!
+ds_stream = load_dataset(
+    "Exorde/exorde-social-media-one-month-2024", 
+    streaming=True
+)
+
+# If it has multiple splits, access the one you need
+if isinstance(ds_stream, dict):
+    # Try common split names
+    if 'train' in ds_stream:
+        stream = ds_stream['train']
+    else:
+        # Take the first available split
+        stream = ds_stream[list(ds_stream.keys())[0]]
+else:
+    stream = ds_stream
+
+# Now you can iterate through the data
+# This only downloads data as you consume it
+for i, example in enumerate(stream):
+    if i >= 10000:  # Stop after 100 examples
+        break
+#    print(f"Example {i}:", list(example.keys())[:3])  # Show first 3 fields
+```    
+
+#### Explore the dataset structure and get a sense of the data types, missing values, and basic statistics. This is crucial for understanding how to preprocess the data for machine learning tasks.
+```{python}
+# Get first 10000 examples only
+small_sample = stream.take(10000)
+
+# Convert to list or iterate
+sample_list = list(small_sample)
+print(f"Loaded {len(sample_list)} examples")
+
+# Or process one by one
+for example in stream.take(500):
+    # Process each example
+    text = example.get('text', example.get('content', ''))
+    # Do something with the text
+```    
+
+#### Basic dataset overview
+```{python}
+
+# create a DataFrame from the sample list
+df = pd.DataFrame(sample_list)
+
+print("Dataset shape:", df.shape)
+print("\nAvailable columns:")
+for col in df.columns:
+    print(f"  - {col}")
+    # Show sample value
+    sample_val = df[col].iloc[0] if len(df) > 0 else "No data"
+    sample_preview = str(sample_val)[:100] + "..." if len(str(sample_val)) > 100 else str(sample_val)
+    print(f"    Sample: {sample_preview}")
+# Assuming df is your DataFrame with 1000 samples
+print("Dataset Overview:")
+print(f"Total samples: {len(df)}")
+print(f"Memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+
+# Check data types
+print("\nColumn data types:")
+print(df.dtypes)
+
+# Check for missing values
+print("\nMissing values:")
+print(df.isnull().sum())    
+```    
+
+#### Time-based analysis to understand the distribution of posts over time, especially focusing on the Thursday midnight pattern. This can help us identify any temporal trends or patterns in the data that may be relevant for feature engineering and model training.
+
+
+```{python}
+df['date'] = pd.to_datetime(df['date'])
+df['hour'] = df['date'].dt.hour
+df['day_of_week'] = df['date'].dt.day_name()
+# Double-check the time distribution
+print("Time verification:")
+print(f"Unique hours in data: {df['hour'].unique()}")
+print(f"All posts at hour: {df['hour'].iloc[0]}")
+print(f"Unique days: {df['day_of_week'].unique()}")
+print(f"Date range: {df['date'].min()} to {df['date'].max()}")
+
+# Check if it's truly all Thursday 0:00
+thursday_midnight = df[
+    (df['day_of_week'] == 'Thursday') & 
+    (df['hour'] == 0)
+]
+print(f"\nTotal posts at Thursday 0:00: {len(thursday_midnight)}")
+print(f"Percentage of dataset: {len(thursday_midnight)/len(df)*100:.1f}%")
+```
+
+#### Analyze the themes, language in use, and emotional tone of the posts at this specific time. This can provide insights into what people are discussing and how they are feeling during this time period, which can inform feature engineering for machine learning models.
+```{python}
+# Analyze the themes at this specific time
+plt.figure(figsize=(15, 10))
+
+# Top themes at Thursday midnight
+plt.subplot(2, 2, 1)
+theme_dist = df['primary_theme'].value_counts().head(15)
+theme_dist.plot(kind='barh')
+plt.title('Top Themes - Thursday 0:00')
+plt.xlabel('Count')
+
+# Sentiment distribution
+plt.subplot(2, 2, 2)
+df['sentiment'].hist(bins=30, edgecolor='black')
+plt.title('Sentiment Distribution - Thursday 0:00')
+plt.xlabel('Sentiment Score')
+plt.axvline(x=0, color='red', linestyle='--', alpha=0.5)
+
+# Emotions at this time
+plt.subplot(2, 2, 3)
+df['main_emotion'].value_counts().plot(kind='bar')
+plt.title('Emotions - Thursday 0:00')
+plt.xlabel('Emotion')
+plt.ylabel('Count')
+plt.xticks(rotation=45)
+
+# Language distribution
+plt.subplot(2, 2, 4)
+df['language'].value_counts().head(10).plot(kind='bar')
+plt.title('Top Languages - Thursday 0:00')
+plt.xlabel('Language')
+plt.ylabel('Count')
+plt.xticks(rotation=45)
+
+plt.tight_layout()
+plt.show()
+```
+
+#### Check the distribution of potential target variables like themes, emotions, and sentiment scores. This will help us understand the class balance and inform our choice of machine learning algorithms and evaluation metrics.
+```{python}
+print("\n" + "="*60)
+print("THURSDAY MIDNIGHT POSTING PATTERNS")
+print("="*60)
+
+# 1. What are people talking about at midnight?
+print("\n1. TOP THEMES AT MIDNIGHT:")
+for theme, count in df['primary_theme'].value_counts().head(10).items():
+    pct = count/len(df)*100
+    print(f"   {theme}: {count} posts ({pct:.1f}%)")
+
+# 2. Emotional state at midnight
+print("\n2. EMOTIONAL STATE AT MIDNIGHT:")
+for emotion, count in df['main_emotion'].value_counts().items():
+    pct = count/len(df)*100
+    print(f"   {emotion}: {count} ({pct:.1f}%)")
+
+# 3. Sentiment analysis
+avg_sentiment = df['sentiment'].mean()
+print(f"\n3. AVERAGE SENTIMENT: {avg_sentiment:.3f}")
+print(f"   ({'Positive' if avg_sentiment > 0.1 else 'Negative' if avg_sentiment < -0.1 else 'Neutral'} overall)")
+
+# 4. Languages
+print("\n4. LANGUAGES AT MIDNIGHT:")
+for lang, count in df['language'].value_counts().head(8).items():
+    pct = count/len(df)*100
+    print(f"   {lang}: {count} ({pct:.1f}%)")
+```    
+
+```{python}
+# Theme distribution with percentages
+theme_distribution = df['primary_theme'].value_counts()
+
+print("Theme distribution from dataframe:")
+print(theme_distribution)
+print(f"\nTotal posts: {theme_distribution.sum()}")
+print(f"Number of unique themes: {len(theme_distribution)}")
+
+# Convert to dictionary if needed
+theme_data = theme_distribution.to_dict()
+
+# Now you can use theme_data dynamically
+total_posts = sum(theme_data.values())
+print(f"\nTotal posts (verified): {total_posts}")
+
+print(f"Percentage of dataset: {total_posts/10000*100:.1f}%")
+
+# Create DataFrame for visualization
+
+
+df_themes = pd.DataFrame(list(theme_data.items()), columns=['Theme', 'Count'])
+df_themes['Percentage'] = (df_themes['Count'] / 10000 * 100).round(1)
+
+# Sort by count
+df_themes = df_themes.sort_values('Count', ascending=True)
+
+# Visualize
+plt.figure(figsize=(12, 8))
+
+# Horizontal bar chart
+plt.subplot(2, 2, 1)
+colors = plt.cm.viridis(df_themes['Percentage'] / max(df_themes['Percentage']))
+bars = plt.barh(df_themes['Theme'], df_themes['Count'], color=colors)
+plt.title('Top 10 Themes at Thursday Midnight', fontsize=14, fontweight='bold')
+plt.xlabel('Number of Posts')
+# Add value labels
+for i, (count, pct) in enumerate(zip(df_themes['Count'], df_themes['Percentage'])):
+    plt.text(count + 20, i, f'{count} ({pct}%)', va='center')
+
+# Pie chart
+plt.subplot(2, 2, 2)
+plt.pie(df_themes['Count'], labels=df_themes['Theme'], autopct='%1.1f%%', 
+        startangle=90, textprops={'fontsize': 8})
+plt.title('Theme Distribution at Midnight', fontsize=14, fontweight='bold')
+
+# Theme categories
+plt.subplot(2, 2, 3)
+# Categorize themes
+categories = {
+    'Info/News': ['Politics', 'Technology', 'Science', 'Business'],
+    'Entertainment': ['Entertainment', 'Sports', 'People', 'Social'],
+    'Finance': ['Cryptocurrency'],
+    'Global Issues': ['Environment']
+}
+
+category_counts = {}
+for category, themes in categories.items():
+    count = sum(df_themes[df_themes['Theme'].isin(themes)]['Count'])
+    category_counts[category] = count
+
+plt.pie(category_counts.values(), labels=category_counts.keys(), autopct='%1.1f%%',
+        startangle=90, colors=['#ff9999', '#66b3ff', '#99ff99', '#ffcc99'])
+plt.title('Theme Categories at Midnight', fontsize=14, fontweight='bold')
+
+# Cumulative percentage
+plt.subplot(2, 2, 4)
+df_themes_sorted = df_themes.sort_values('Count', ascending=False)
+df_themes_sorted['Cumulative'] = df_themes_sorted['Percentage'].cumsum()
+plt.plot(range(1, len(df_themes_sorted)+1), df_themes_sorted['Cumulative'], 
+         marker='o', linewidth=2, markersize=8)
+plt.axhline(y=50, color='r', linestyle='--', alpha=0.5, label='50%')
+plt.axhline(y=80, color='g', linestyle='--', alpha=0.5, label='80%')
+plt.xlabel('Number of Themes')
+plt.ylabel('Cumulative Percentage')
+plt.title('Cumulative Theme Coverage')
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.xticks(range(1, len(df_themes_sorted)+1))
+
+plt.tight_layout()
+plt.show()
+```
+
+#### Prepare the Exorde dataset for machine learning. This involves handling text data, encoding categorical variables, creating features from the text (like TF-IDF vectors), and parsing the keywords and secondary themes into usable formats. We will also create additional features such as the number of keywords, text length, and sentiment buckets to enrich our dataset for machine learning models.
+
+```{python}
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.feature_extraction.text import TfidfVectorizer
+import warnings
+warnings.filterwarnings('ignore')
+
+# Assuming we have our DataFrame with the 10,000 samples
+# Let's prepare it for ML
+
+def prepare_dataset(df):
+    """
+    Prepare the Exorde dataset for machine learning
+    """
+    # Create a working copy
+    ml_df = df.copy()
+    
+    # 1. Handle text data
+    ml_df['clean_text'] = ml_df['original_text'].fillna('')
+    
+    # 2. Encode categorical variables
+    le_theme = LabelEncoder()
+    ml_df['theme_encoded'] = le_theme.fit_transform(ml_df['primary_theme'])
+    
+    le_emotion = LabelEncoder()
+    ml_df['emotion_encoded'] = le_emotion.fit_transform(ml_df['main_emotion'])
+    
+    le_lang = LabelEncoder()
+    ml_df['language_encoded'] = le_lang.fit_transform(ml_df['language'])
+    
+    # 3. Create features from text
+    tfidf = TfidfVectorizer(max_features=1000, stop_words='english')
+    text_features = tfidf.fit_transform(ml_df['clean_text'])
+    
+    # 4. Parse keywords
+    def parse_keywords_safe(keyword_str):
+        if pd.isna(keyword_str):
+            return []
+        return [k.strip() for k in str(keyword_str).split(',')]
+    
+    ml_df['keywords_list'] = ml_df['english_keywords'].apply(parse_keywords_safe)
+    
+    # 5. Parse secondary themes
+    def parse_secondary_themes(theme_str):
+        try:
+            if pd.isna(theme_str):
+                return []
+            if isinstance(theme_str, str):
+                theme_str = theme_str.strip('[]')
+                if theme_str:
+                    return [int(x.strip()) for x in theme_str.split(',')]
+            return []
+        except:
+            return []
+    
+    ml_df['secondary_themes_list'] = ml_df['secondary_themes'].apply(parse_secondary_themes)
+    
+    # 6. Create additional features
+    ml_df['num_keywords'] = ml_df['keywords_list'].apply(len)
+    ml_df['num_secondary_themes'] = ml_df['secondary_themes_list'].apply(len)
+    ml_df['text_length'] = ml_df['clean_text'].apply(len)
+    ml_df['word_count'] = ml_df['clean_text'].apply(lambda x: len(x.split()))
+    
+    # 7. Sentiment buckets
+    ml_df['sentiment_bucket'] = pd.cut(ml_df['sentiment'], 
+                                        bins=[-1, -0.5, -0.1, 0.1, 0.5, 1],
+                                        labels=['very_negative', 'negative', 'neutral', 
+                                               'positive', 'very_positive'])
+    
+    return ml_df, le_theme, le_emotion, le_lang, tfidf
+
+# Apply preparation
+ml_df, le_theme, le_emotion, le_lang, tfidf = prepare_dataset(df)
+print("Dataset ready for ML!")
+print(f"Shape: {ml_df.shape}")
+print(f"Features created: {list(ml_df.columns)}")
+```
+
+#### Now that we have our dataset prepared, we can proceed to train machine learning models to predict the primary theme of a post based on its text and metadata. We will evaluate the model's performance using classification metrics and analyze feature importance to understand which features are most influential in predicting the themes.
+```{python}
+# Predict the primary theme from text and metadata
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
+
+print("="*60)
+print("PROJECT 1: THEME CLASSIFIER")
+print("Predict what topic a post is about")
+print("="*60)
+
+# Prepare features
+X_text = tfidf.transform(ml_df['clean_text']).toarray()
+X_meta = ml_df[['sentiment', 'num_keywords', 'word_count', 'language_encoded']].values
+X = np.hstack([X_text, X_meta])
+y = ml_df['theme_encoded']
+
+# Split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf.fit(X_train, y_train)
+
+# Evaluate
+y_pred = rf.predict(X_test)
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, target_names=le_theme.classes_))
+
+# Feature importance
+feature_names = list(tfidf.get_feature_names_out()) + ['sentiment', 'num_keywords', 'word_count', 'language']
+importances = pd.DataFrame({
+    'feature': feature_names[:20],  # Top 20
+    'importance': rf.feature_importances_[:20]
+}).sort_values('importance', ascending=False)
+
+print("\nTop 20 most important features:")
+print(importances)
+```
+
+#### Check class distribution to understand imbalance ratio, which can inform our choice of algorithms and evaluation metrics. If the classes are highly imbalanced, we may need to consider techniques like resampling, class weighting, or using metrics like F1-score instead of accuracy.
+
+```{python}
+# Check class distribution
+class_distribution = ml_df['primary_theme'].value_counts()
+print("Class distribution:")
+print(class_distribution)
+print(f"\nImbalance ratio: {class_distribution.max()/class_distribution.min():.1f}:1")
+```
+#### Analyze the confusion matrix to see which themes are most commonly confused with each other. This can provide insights into which themes are similar in content and may require more nuanced features or a different modeling approach to distinguish between them.
+
+```{python}
+from sklearn.metrics import confusion_matrix
+
+
+# Get theme names
+class_names = sorted(ml_df['primary_theme'].unique())
+
+# Create confusion matrix
+cm = confusion_matrix(y_test, y_pred)
+
+# Normalize by row (true labels)
+cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+# SINGLE PLOT - Normalized confusion matrix
+plt.figure(figsize=(14, 10))
+sns.heatmap(cm_normalized, annot=True, fmt='.2f', 
+            xticklabels=class_names, 
+            yticklabels=class_names,
+            cmap='Blues',
+            annot_kws={'size': 8})
+plt.title('Normalized Confusion Matrix - Theme Classification', fontsize=14, fontweight='bold')
+plt.xlabel('Predicted Theme', fontsize=12)
+plt.ylabel('Actual Theme', fontsize=12)
+plt.xticks(rotation=45, ha='right', fontsize=9)
+plt.yticks(fontsize=9)
+plt.tight_layout()
+plt.show()
+
+# OPTIONAL: Quick summary of most confused pairs
+print("\nMost confused theme pairs (>20% misclassification):")
+for i in range(len(class_names)):
+    for j in range(len(class_names)):
+        if i != j and cm_normalized[i, j] > 0.20:
+            print(f"  {class_names[i]} → {class_names[j]}: {cm_normalized[i, j]:.1%}")
+```
+
+**Future improvements could include trying different algorithms (like SVM, XGBoost, or deep learning models), performing hyperparameter tuning, and exploring more advanced text features (like word embeddings or transformer-based features) to improve theme classification performance.**
